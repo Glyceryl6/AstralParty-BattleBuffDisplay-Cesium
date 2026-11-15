@@ -1,5 +1,5 @@
 using CesiumLoader.SDK.Manifests;
 
-[assembly: ModManifest("战斗界面 Buff 显示", "0.1.4",
+[assembly: ModManifest("战斗界面 Buff 显示", "0.1.5",
     "Glyceryl6", "在战斗双方显示原版 Buff 卡片、图标、说明、层数和剩余回合，支持居中排列及进退场动画。",
     Permissions = ModPermission.ReadGameState, SdkVersion = "3.8.3")]

@@ -22,7 +22,7 @@ internal sealed class FightBuffListService : IDisposable {
     private const int MaxBuffsPerSide = 48;
     private const float RefreshInterval = 1.10f;
     private const float PhaseCheckInterval = .08f;
-    private const float ExitGrace = .45f;
+    private const float ExitGrace = .12f;
     private const float EnterDuration = .30f;
     private const float ExitDuration = .30f;
     private const float EdgeMargin = 12f;
@@ -60,12 +60,15 @@ internal sealed class FightBuffListService : IDisposable {
         try {
             bool inCombat = IsCombatWindow(fight, out UIFightWindow? pane);
 
-            // A FightWindow/content pane can be swapped for a frame during the
-            // ready/result transitions. Do not play exit/enter twice for that
-            // transient state; only exit after it has remained non-combat.
+            // A fight consists of several visual steps (showtime, card, dice,
+            // result). Those are NOT separate battles. In particular, do not
+            // exit at step=1 or 6 and then enter again at the next step.
+            // The real lifecycle ends when the FightWindow leaves the popup
+            // stack. Looking only at its contentPane/onStage is too transient.
+            bool windowVisible = IsFightWindowShowing();
             if (_overlay != null && now >= _nextPhaseCheckAt) {
                 _nextPhaseCheckAt = now + PhaseCheckInterval;
-                if (inCombat) {
+                if (windowVisible) {
                     _nonCombatSince = -1f;
                 } else {
                     if (_nonCombatSince < 0f) _nonCombatSince = now;
@@ -75,9 +78,9 @@ internal sealed class FightBuffListService : IDisposable {
             }
 
             if (_exitStartedAt >= 0f) {
-                if (inCombat) {
-                    // A transient window change ended before the exit finished.
-                    // Keep the cards visible instead of replaying a full entry.
+                if (windowVisible) {
+                    // A temporary UI reattachment should not restart both
+                    // slide-in animations. Keep the existing cards in place.
                     _exitStartedAt = -1f;
                     _nonCombatSince = -1f;
                     _attacker.AppearedAt = now - EnterDuration;
@@ -153,6 +156,14 @@ internal sealed class FightBuffListService : IDisposable {
                 SdkLog.Warn("BattleBuffDisplay", "原版 Buff 列表渲染失败，已安全跳过本次更新：" + ex);
             }
         }
+    }
+
+    private static bool IsFightWindowShowing() {
+        if (!UIManager.hasInstance) return false;
+        foreach (BaseWindow popup in UIManager.inst.propUpWindows) {
+            if (popup is FightWindow window && window.isShowing) return true;
+        }
+        return false;
     }
 
     private static bool IsCombatWindow(FightWindow? fight, out UIFightWindow? pane) {
@@ -257,6 +268,13 @@ internal sealed class FightBuffListService : IDisposable {
         int count = properties.Count + buffs.Count;
 
         if (count == 0) {
+            // GetShowBuffs can briefly return an empty snapshot during a fight
+            // phase transition. Keep the last rendered cards until the empty
+            // result is stable rather than flashing them out and back in.
+            if (side.Panel != null && !side.Panel.isDisposed && side.Panel.visible) {
+                if (side.EmptySince < 0f) side.EmptySince = now;
+                if (now - side.EmptySince < RefreshInterval + .15f) return;
+            }
             if (side.Panel != null && !side.Panel.isDisposed) side.Panel.visible = false;
             side.Buffs = buffs;
             side.Properties = properties;
@@ -265,6 +283,7 @@ internal sealed class FightBuffListService : IDisposable {
             return;
         }
 
+        side.EmptySince = -1f;
         bool wasHidden = side.Panel == null || side.Panel.isDisposed || !side.Panel.visible;
         if (side.Panel == null || side.Panel.isDisposed || side.Panel.parent != _overlay) {
             side.Clear();
@@ -405,6 +424,7 @@ internal sealed class FightBuffListService : IDisposable {
         internal int Fingerprint = int.MinValue;
         internal float AppearedAt = -1f;
         internal float ExitX;
+        internal float EmptySince = -1f;
 
         internal void Clear() {
             if (Panel != null && !Panel.isDisposed) {
@@ -415,6 +435,7 @@ internal sealed class FightBuffListService : IDisposable {
             Fingerprint = int.MinValue;
             AppearedAt = -1f;
             ExitX = 0f;
+            EmptySince = -1f;
             Buffs = new List<Buff>();
             Properties = new List<PropertyData<int>>();
         }
