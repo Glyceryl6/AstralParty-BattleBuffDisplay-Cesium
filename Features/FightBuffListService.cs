@@ -22,6 +22,8 @@ internal sealed class FightBuffListService : IDisposable {
     private const float EnterDuration = .30f;
     private const float ExitDuration = .30f;
     private const float EdgeMargin = 12f;
+    private const int CardSpacing = 12;
+    private const float CardInset = 4f;
     private readonly Side _attacker = new Side();
     private readonly Side _defender = new Side();
     private UIFightWindow? _pane;
@@ -178,6 +180,9 @@ internal sealed class FightBuffListService : IDisposable {
             side.Panel.touchable = false;
             if (side.Panel.di != null) side.Panel.di.visible = false;
             side.Panel.list_Buff.layout = ListLayoutType.SingleColumn;
+            side.Panel.list_Buff.columnCount = 1;
+            side.Panel.list_Buff.lineGap = Math.Max(CardSpacing,
+                side.Panel.list_Buff.lineGap);
             side.Panel.list_Buff.autoResizeItem = false;
             side.Panel.list_Buff.touchable = false;
             side.AppearedAt = now;
@@ -198,18 +203,31 @@ internal sealed class FightBuffListService : IDisposable {
         // Match the previous MOD: make panel height depend on the actual
         // cards, then position its center at the same 46% screen-height line.
         // More Buffs grow equally above and below that line.
-        panel.list_Buff.EnsureBoundsCorrect();
-        float listWidth = 1f;
-        float listHeight = 0f;
-        for (int i = 0; i < panel.list_Buff.numChildren && i < count; i++) {
-            GObject card = panel.list_Buff.GetChildAt(i);
-            listWidth = Math.Max(listWidth, card.width);
-            listHeight += Math.Max(1f, card.height) + (i == 0 ? 0 : panel.list_Buff.lineGap);
+        // Native GList must position its own children. Force a nonnegative
+        // vertical gap, then measure the rendered bounds (including any rich
+        // description that grew after the item renderer ran). Do not override
+        // child XY: GList would undo it on the next automatic layout pass.
+        int actual = Math.Min(count, panel.list_Buff.numChildren);
+        for (int i = 0; i < actual; i++) {
+            if (panel.list_Buff.GetChildAt(i) is UICom_BuffInfoItem row &&
+                row.txt_Desc != null) {
+                float needed = row.txt_Desc.y + row.txt_Desc.height + CardInset;
+                if (needed > row.height) row.SetSize(row.width, needed);
+                NativeBuffCardStyle.RefreshBorder(row);
+            }
         }
-        if (listHeight > 1f) {
-            panel.list_Buff.SetSize(listWidth, listHeight);
+        panel.list_Buff.EnsureBoundsCorrect();
+        float rightEdge = 1f, bottomEdge = 1f;
+        for (int i = 0; i < actual; i++) {
+            GObject card = panel.list_Buff.GetChildAt(i);
+            rightEdge = Math.Max(rightEdge, card.x + card.width);
+            bottomEdge = Math.Max(bottomEdge, card.y + card.height);
+        }
+        if (actual > 0) {
+            panel.list_Buff.SetSize(rightEdge + CardInset,
+                bottomEdge + CardInset);
             panel.list_Buff.SetXY(0f, 0f);
-            panel.SetSize(listWidth, listHeight);
+            panel.SetSize(rightEdge + CardInset, bottomEdge + CardInset);
         }
     }
 

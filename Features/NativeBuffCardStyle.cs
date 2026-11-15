@@ -24,12 +24,24 @@ internal static class NativeBuffCardStyle {
             item.AddChild(background);
             item.SetChildIndex(background, 0);
         }
-        float width = Math.Max(1f, item.width);
-        float height = Math.Max(1f, item.height);
+        // Keep the entire round outline inside the row's rendered bounds.
+        float width = Math.Max(1f, item.width - 6f);
+        float height = Math.Max(1f, item.height - 6f);
+        background.SetXY(3f, 3f);
         background.SetSize(width, height);
         // Matches the former 2px golden outline / 10px corner radius.
         // The Shape API is the official FairyGUI Unity API.
         background.shape.DrawRoundRect(2f, Border, Fill, 10f, 10f, 10f, 10f);
         NativeBuffBadgeOverlay.Apply(item, progress, rounds);
+    }
+
+    internal static void RefreshBorder(UICom_BuffInfoItem item) {
+        if (item == null || item.isDisposed) return;
+        GGraph? background = item.GetChild(BackgroundName) as GGraph;
+        if (background == null) return;
+        background.SetXY(3f, 3f);
+        background.SetSize(Math.Max(1f, item.width - 6f),
+            Math.Max(1f, item.height - 6f));
+        background.shape.DrawRoundRect(2f, Border, Fill, 10f, 10f, 10f, 10f);
     }
 }
