@@ -31,13 +31,12 @@ internal sealed class FightBuffVisualService : IDisposable {
 
     internal bool Enabled { get; set; }
 
-    internal void Tick() {
-        if (!Enabled || !UIManager.hasInstance || !GameLogicManager.hasInstance ||
+    internal void Tick(FightWindow? fight) {
+        if (!Enabled || fight == null || !GameLogicManager.hasInstance ||
             !EffectManager.hasInstance) { Clear(); return; }
         if (DateTime.UtcNow < _next) return;
         _next = DateTime.UtcNow.AddMilliseconds(550);
         try {
-            FightWindow fight = UIManager.inst.Fight;
             if (!fight.isShowing || !(fight.contentPane is UIFightWindow pane) ||
                 pane.isDisposed || pane.step == null || pane.step.selectedIndex < 2 ||
                 pane.step.selectedIndex > 5) { Clear(); return; }

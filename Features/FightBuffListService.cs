@@ -30,16 +30,14 @@ internal sealed class FightBuffListService : IDisposable {
 
     internal bool Enabled { get; set; }
 
-    internal void Tick() {
-        if (!Enabled || !UIManager.hasInstance || !GameLogicManager.hasInstance) {
+    internal void Tick(FightWindow? fight) {
+        if (!Enabled || fight == null || !GameLogicManager.hasInstance) {
             Clear();
             return;
         }
         if (DateTime.UtcNow < _next) return;
         _next = DateTime.UtcNow.AddMilliseconds(400);
         try {
-            UIManager manager = UIManager.inst;
-            FightWindow fight = manager.Fight;
             if (!fight.isShowing || !(fight.contentPane is UIFightWindow pane) ||
                 pane.isDisposed || pane.parent == null || pane.step == null ||
                 pane.step.selectedIndex < FirstCombatStep || pane.step.selectedIndex > LastCombatStep) {
@@ -97,6 +95,13 @@ internal sealed class FightBuffListService : IDisposable {
             side.Panel = UICom_BuffInfo.CreateInstance();
             pane.AddChild(side.Panel);
             side.Panel.touchable = false;
+            // The original Com_BuffInfo background is opaque. The overlay
+            // should draw only its buff entries, not cover the fight UI.
+            if (side.Panel.di != null) side.Panel.di.visible = false;
+            side.Panel.list_Buff.layout = ListLayoutType.SingleColumn;
+            side.Panel.list_Buff.lineCount = 1;
+            side.Panel.list_Buff.autoResizeItem = false;
+            side.Panel.list_Buff.touchable = false;
         }
         UICom_BuffInfo panel = side.Panel;
         float naturalWidth = Math.Max(1f, panel.width);
@@ -107,10 +112,38 @@ internal sealed class FightBuffListService : IDisposable {
         panel.SetScale(scale, scale);
         float actualWidth = naturalWidth * scale;
         panel.SetXY(left ? 8f : Math.Max(8f, pane.width - actualWidth - 8f), 44f);
+        int fingerprint = Fingerprint(buffs, properties, count);
+        if (side.Fingerprint == fingerprint) return;
+        side.Fingerprint = fingerprint;
         side.Buffs = buffs;
         side.Properties = properties;
         panel.list_Buff.itemRenderer = (index, item) => DrawBuff(side, index, item);
+        bool countChanged = panel.list_Buff.numItems != count;
         panel.list_Buff.numItems = count;
+        // FairyGUI does not invoke itemRenderer when numItems stays the same.
+        // Buff stack/round changes must still redraw existing native rows.
+        if (!countChanged) {
+            for (int i = 0; i < panel.list_Buff.numChildren && i < count; i++)
+                DrawBuff(side, i, panel.list_Buff.GetChildAt(i));
+        }
+    }
+
+    // The former plugin rendered only when buff contents changed, avoiding
+    // 2 full UI list rebuilds every update on low-powered machines.
+    private static int Fingerprint(List<Buff> buffs, List<PropertyData<int>> properties, int count) {
+        unchecked {
+            int result = 17 * 31 + count;
+            foreach (PropertyData<int> value in properties) {
+                result = result * 31 + value.buffId;
+                result = result * 31 + value.property.Value;
+            }
+            foreach (Buff value in buffs) {
+                result = result * 31 + value.BuffId;
+                result = result * 31 + value.Progress;
+                result = result * 31 + value.KeepRound;
+            }
+            return result;
+        }
     }
 
     private static void DrawBuff(Side side, int index, GObject item) {
@@ -156,6 +189,7 @@ internal sealed class FightBuffListService : IDisposable {
         internal UICom_BuffInfo? Panel;
         internal List<Buff> Buffs = [];
         internal List<PropertyData<int>> Properties = [];
+        internal int Fingerprint = int.MinValue;
 
         internal void Clear() {
             if (Panel != null && !Panel.isDisposed) {
@@ -163,6 +197,7 @@ internal sealed class FightBuffListService : IDisposable {
                 Panel.Dispose();
             }
             Panel = null;
+            Fingerprint = int.MinValue;
             // These lists were returned by the game; do not modify them.
             Buffs = new List<Buff>();
             Properties = new List<PropertyData<int>>();

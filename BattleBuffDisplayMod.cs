@@ -1,7 +1,13 @@
 using BattleBuffDisplay.Features;
 using CesiumLoader.SDK.Configuration;
+using CesiumLoader.SDK.Logging;
+using Core.Scene;
+using UI;
+using System;
+using GameSceneManager = Core.Scene.SceneManager;
 using CesiumLoader.SDK.Mods;
 using UnityEngine.SceneManagement;
+using Scene = UnityEngine.SceneManagement.Scene;
 
 namespace BattleBuffDisplay;
 
@@ -9,23 +15,25 @@ namespace BattleBuffDisplay;
 public sealed class BattleBuffDisplayMod : ModBase {
     private FightBuffListService? _lists;
     private FightBuffVisualService? _effects;
+    private DateTime _nextWarning = DateTime.MinValue;
+    private bool _activeFight;
 
     public override string Name => "BattleBuffDisplay";
-    public override string Version => "0.1.0";
+    public override string Version => "0.1.1";
     public override string Description => "战斗 Buff 列表与可选附加特效";
 
     public override void OnLoad() => Log.Info("战斗 Buff 显示已加载");
 
     public override void OnInitialize() {
-        if (Config == null) {
-            Log.Warn("配置尚未就绪，未启动战斗 Buff 显示");
-            return;
+        // The Buff list is always enabled, even if an SDK build provides no
+        // configuration service. Only the optional effects depend on config.
+        if (Config != null) {
+            Config.SetDefault("battle.fightBuffEffects", false,
+                ConfigDoc.All("显示额外 Buff 特效（实验，可能影响性能）"));
+            Config.SaveIfDirty();
+        } else {
+            Log.Warn("配置尚未就绪，使用默认关闭的附加特效");
         }
-        // Buff lists are always on while installed. Only optional effects
-        // have a configuration flag; this MOD has no redundant master switch.
-        Config.SetDefault("battle.fightBuffEffects", false,
-            ConfigDoc.All("显示额外 Buff 特效（实验，可能影响性能）"));
-        Config.SaveIfDirty();
         _lists = new FightBuffListService { Enabled = true };
         _effects = new FightBuffVisualService();
         ApplyConfiguration();
@@ -35,21 +43,52 @@ public sealed class BattleBuffDisplayMod : ModBase {
 
     private void ApplyConfiguration() {
         if (_effects == null || Config == null) return;
-        _effects.Enabled = Config.GetBool("battle.fightBuffEffects", false);
+        _effects.Enabled = Config.GetBool("battle.fightBuffEffects");
         if (!_effects.Enabled) _effects.Clear();
     }
 
     public override void OnUpdate() {
-        _lists?.Tick();
-        if (_effects?.Enabled == true) _effects.Tick();
+        try {
+            // The loader starts ticking before the game is actually in a
+            // battle. Do not obtain UIManager.Fight here: its getter creates a
+            // FightWindow and can interfere with the home-screen transition.
+            if (!GameSceneManager.hasInstance ||
+                GameSceneManager.inst.currentType.Value != SceneType.Battle ||
+                !UIManager.hasInstance) {
+                if (_activeFight) ClearScene();
+                return;
+            }
+            FightWindow? fight = ActiveFightWindow.Find();
+            if (fight == null) {
+                if (_activeFight) ClearScene();
+                return;
+            }
+            _activeFight = true;
+            _lists?.Tick(fight);
+            if (_effects?.Enabled == true) _effects.Tick(fight);
+        } catch (Exception error) {
+            ClearScene();
+            if (DateTime.UtcNow >= _nextWarning) {
+                _nextWarning = DateTime.UtcNow.AddSeconds(20);
+                SdkLog.Warn("BattleBuffDisplay", "本帧战斗 Buff 绘制已安全跳过：" + error.Message);
+            }
+        }
     }
 
-    public override void OnSceneLoaded(Scene scene, LoadSceneMode mode) => ClearScene();
-    public override void OnSceneUnloaded(Scene scene) => ClearScene();
+    public override void OnSceneLoaded(Scene scene, LoadSceneMode mode) {
+        ClearScene();
+    }
+    
+    public override void OnSceneUnloaded(Scene scene) {
+        ClearScene();
+    }
 
     private void ClearScene() {
-        _lists?.Clear();
-        _effects?.Clear();
+        _activeFight = false;
+        // A scene unload can invalidate FairyGUI and effect handles before
+        // managed OnSceneUnloaded runs. Cleanups must not break scene loading.
+        try { _lists?.Clear(); } catch (Exception) { /* already unloaded */ }
+        try { _effects?.Clear(); } catch (Exception) { /* already unloaded */ }
     }
 
     public override void OnUnload() {
