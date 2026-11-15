@@ -24,10 +24,12 @@ internal static class NativeBuffCardStyle {
             item.AddChild(background);
             item.SetChildIndex(background, 0);
         }
-        // Keep the entire round outline inside the row's rendered bounds.
-        float width = Math.Max(1f, item.width - 6f);
-        float height = Math.Max(1f, item.height - 6f);
-        background.SetXY(3f, 3f);
+        // The previous implementation inset the shape by 3px. The original
+        // MOD draws on the full native item bounds, so keep the entire border
+        // and rounded corners aligned with the original card.
+        float width = Math.Max(1f, item.width);
+        float height = Math.Max(1f, item.height);
+        background.SetXY(0f, 0f);
         background.SetSize(width, height);
         // Matches the former 2px golden outline / 10px corner radius.
         // The Shape API is the official FairyGUI Unity API.
@@ -39,9 +41,8 @@ internal static class NativeBuffCardStyle {
         if (item == null || item.isDisposed) return;
         GGraph? background = item.GetChild(BackgroundName) as GGraph;
         if (background == null) return;
-        background.SetXY(3f, 3f);
-        background.SetSize(Math.Max(1f, item.width - 6f),
-            Math.Max(1f, item.height - 6f));
+        background.SetXY(0f, 0f);
+        background.SetSize(Math.Max(1f, item.width), Math.Max(1f, item.height));
         background.shape.DrawRoundRect(2f, Border, Fill, 10f, 10f, 10f, 10f);
     }
 }

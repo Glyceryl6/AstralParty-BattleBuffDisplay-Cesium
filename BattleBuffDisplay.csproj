@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>BattleBuffDisplay</AssemblyName>
     <RootNamespace>BattleBuffDisplay</RootNamespace>
-    <Version>0.1.2</Version>
+    <Version>0.1.4</Version>
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="UnityEngine.CoreModule">

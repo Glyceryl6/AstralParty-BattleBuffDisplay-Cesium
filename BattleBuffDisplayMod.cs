@@ -19,7 +19,7 @@ public sealed class BattleBuffDisplayMod : ModBase {
     private bool _activeFight;
 
     public override string Name => "BattleBuffDisplay";
-    public override string Version => "0.1.3";
+    public override string Version => "0.1.4";
     public override string Description => "战斗 Buff 列表与可选附加特效";
 
     public override void OnLoad() => Log.Info("战斗 Buff 显示已加载");
