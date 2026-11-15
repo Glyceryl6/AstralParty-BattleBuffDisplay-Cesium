@@ -13,8 +13,7 @@ internal static class ActiveFightWindow {
         foreach (BaseWindow window in UIManager.inst.propUpWindows) {
             if (window is FightWindow fight && fight.isShowing &&
                 fight.contentPane is UIFightWindow pane &&
-                !pane.isDisposed && pane.onStage && pane.step != null &&
-                pane.step.selectedIndex >= 2 && pane.step.selectedIndex <= 5)
+                !pane.isDisposed && pane.onStage && pane.step != null)
                 return fight;
         }
         return null;

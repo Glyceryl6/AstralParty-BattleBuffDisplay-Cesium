@@ -1,7 +1,7 @@
 {
   "id": "BattleBuffDisplay",
   "name": "战斗界面 Buff 显示",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "Glyceryl6",
   "description": "战斗双方 Buff 列表、回合与层数，可选额外特效",
   "permissions": 1,

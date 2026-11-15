@@ -19,7 +19,7 @@ public sealed class BattleBuffDisplayMod : ModBase {
     private bool _activeFight;
 
     public override string Name => "BattleBuffDisplay";
-    public override string Version => "0.1.1";
+    public override string Version => "0.1.2";
     public override string Description => "战斗 Buff 列表与可选附加特效";
 
     public override void OnLoad() => Log.Info("战斗 Buff 显示已加载");
@@ -59,11 +59,7 @@ public sealed class BattleBuffDisplayMod : ModBase {
                 return;
             }
             FightWindow? fight = ActiveFightWindow.Find();
-            if (fight == null) {
-                if (_activeFight) ClearScene();
-                return;
-            }
-            _activeFight = true;
+            _activeFight = fight != null;
             _lists?.Tick(fight);
             if (_effects?.Enabled == true) _effects.Tick(fight);
         } catch (Exception error) {
