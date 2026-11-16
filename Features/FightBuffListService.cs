@@ -7,6 +7,7 @@ using FairyGUI;
 using GameLogic;
 using party.model;
 using UI;
+using Tools;
 using UnityEngine;
 
 namespace BattleBuffDisplay.Features;
@@ -21,7 +22,6 @@ internal sealed class FightBuffListService : IDisposable {
     private const int LastCombatStep = 5;
     private const int MaxBuffsPerSide = 48;
     private const float RefreshInterval = 1.10f;
-    private const float PhaseCheckInterval = .08f;
     private const float ExitGrace = .12f;
     private const float EnterDuration = .30f;
     private const float DefaultExitDuration = .30f;
@@ -29,10 +29,8 @@ internal sealed class FightBuffListService : IDisposable {
 
     private static readonly MethodInfo? NativeListRenderer = typeof(BattlePlayerInfoWindow).GetMethod(
         "RefreshMonsterBuffList", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-    // FightWindow.CloseFightWin plays fightOver in reverse, then awaits its
-    // completion before Hide(). Starting the slide-out at Hide is too late.
-    private static readonly FieldInfo? TransitionReversed = typeof(Transition).GetField(
-        "_reversed", BindingFlags.Instance | BindingFlags.NonPublic);
+    // The original FightWindow plays fightOver forwards when FinishFight runs,
+    // and reverses it when closing. Both mark the end of the current round.
     private static readonly FieldInfo? TransitionDuration = typeof(Transition).GetField(
         "_totalDuration", BindingFlags.Instance | BindingFlags.NonPublic);
 
@@ -44,16 +42,33 @@ internal sealed class FightBuffListService : IDisposable {
     private GComponent? _overlay;
     private float _exitStartedAt = -1f;
     private float _exitDuration = DefaultExitDuration;
-    private bool _closingWithNativeTransition;
+    private bool _awaitNextRound;
+    private bool _newRoundRequested;
+    private Signal<bool, UIPanelType>? _readySignal;
     private float _nonCombatSince = -1f;
     private float _nextPollAt;
-    private float _nextPhaseCheckAt;
     private float _warnAt;
     private long _attackerId;
     private long _defenderId;
     private bool _typesRegistered;
 
     internal bool Enabled { get; set; }
+
+    // The native ReadyFight signal is sent after the next pair of actors is
+    // assigned, including a counterattack. Window visibility cannot identify
+    // this boundary: the same FightWindow stays open between both rounds.
+    private void OnReadyFight(bool isReady, UIPanelType panel) {
+        _newRoundRequested = true;
+        _awaitNextRound = false;
+    }
+
+    private void EnsureRoundSignal() {
+        Signal<bool, UIPanelType>? signal = GameLogicManager.inst.fight?.signal.readyFight;
+        if (ReferenceEquals(signal, _readySignal)) return;
+        if (_readySignal != null) _readySignal.RemoveListener(OnReadyFight);
+        _readySignal = signal;
+        if (_readySignal != null) _readySignal.AddListener(OnReadyFight);
+    }
 
     internal void Tick(FightWindow? fight) {
         float now = Time.realtimeSinceStartup;
@@ -63,60 +78,59 @@ internal sealed class FightBuffListService : IDisposable {
         }
 
         if (_overlay != null && (_overlay.isDisposed || !ReferenceEquals(_root, GRoot.inst)))
-            Clear();
+            ClearVisuals();
 
         try {
-            bool inCombat = IsCombatWindow(fight, out UIFightWindow? pane);
+            EnsureRoundSignal();
+            if (_newRoundRequested) {
+                _newRoundRequested = false;
+                // Always clear the previous two actors before the new round,
+                // even if a reverse animation had not finished yet.
+                ClearVisuals();
+            }
 
-            // The popup is in the UI stack throughout challenge, combat and
-            // result. Do not treat a transient step change as a new battle.
+            bool inCombat = IsCombatWindow(fight, out UIFightWindow? pane);
             bool windowVisible = (fight != null && fight.isShowing) ||
                 (_window != null && _window.isShowing) || IsFightWindowShowing();
-            bool nativeClosing = TryGetNativeCloseDuration(
-                (fight ?? _window)?.contentPane as UIFightWindow, out float nativeDuration);
+            UIFightWindow? nativePane = (fight ?? _window)?.contentPane as UIFightWindow;
+            int phase = nativePane?.step?.selectedIndex ?? -1;
+            bool fightOverPlaying = TryGetFightOverDuration(nativePane, out float nativeDuration);
 
-            // The native window retracts its Fight/Show transition *before*
-            // Hide(). Mirror its reverse start and duration to arrive offscreen
-            // as the original window disappears, as in the old MOD.
-            if (_overlay != null && nativeClosing && _exitStartedAt < 0f)
-                BeginExit(now, true, nativeDuration);
-
-            if (_overlay != null && now >= _nextPhaseCheckAt && _exitStartedAt < 0f) {
-                _nextPhaseCheckAt = now + PhaseCheckInterval;
-                if (windowVisible) _nonCombatSince = -1f;
-                else {
+            // FinishFight.Play() is the beginning of the old MOD's exit,
+            // not Hide() and not only the later PlayReverse(). Result phase
+            // and truly closed windows also end this combat round.
+            if (_overlay != null && !_awaitNextRound) {
+                bool ended = fightOverPlaying || phase == 6;
+                if (!windowVisible) {
                     if (_nonCombatSince < 0f) _nonCombatSince = now;
-                    if (now - _nonCombatSince >= ExitGrace)
-                        BeginExit(now, false, DefaultExitDuration);
+                    ended |= now - _nonCombatSince >= ExitGrace;
+                } else _nonCombatSince = -1f;
+                if (ended) {
+                    BeginExit(now, fightOverPlaying
+                        ? nativeDuration : DefaultExitDuration);
+                    _awaitNextRound = true;
                 }
             }
 
-            if (_exitStartedAt >= 0f) {
-                if (!_closingWithNativeTransition && windowVisible) {
-                    // A one-frame detach during entry is not a battle exit.
-                    _exitStartedAt = -1f;
-                    _nonCombatSince = -1f;
-                    _attacker.AppearedAt = now - EnterDuration;
-                    _defender.AppearedAt = now - EnterDuration;
-                } else {
-                    if (!windowVisible && now - _exitStartedAt >= _exitDuration) Clear();
+            if (_awaitNextRound) {
+                if (_overlay != null) {
+                    if (_exitStartedAt < 0f) BeginExit(now, DefaultExitDuration);
+                    if (now - _exitStartedAt >= _exitDuration) ClearVisuals();
                     else Place(now);
-                    return;
                 }
+                // Do not draw the previous actors again simply because
+                // FightWindow still has step=2 between rounds.
+                return;
             }
 
-            if (!inCombat || pane == null || fight == null) {
+            if (!inCombat || pane == null || fight == null || fightOverPlaying) {
                 if (_overlay != null) Place(now);
                 return;
             }
 
             if (_overlay != null && (!ReferenceEquals(_pane, pane) || !ReferenceEquals(_window, fight))) {
-                // Rebind to the active fight window without tearing down the
-                // cards. FightWindow may replace its content pane mid-transition.
-                _pane = pane;
-                _window = fight;
-                if (_overlay != null && !_overlay.isDisposed)
-                    _overlay.sortingOrder = Math.Min(32760, pane.sortingOrder + 1);
+                // Different UI instances cannot share old Buff card data.
+                ClearVisuals();
             }
 
             if (now < _nextPollAt) {
@@ -183,13 +197,11 @@ internal sealed class FightBuffListService : IDisposable {
         return false;
     }
 
-    private static bool TryGetNativeCloseDuration(UIFightWindow? pane, out float duration) {
+    private static bool TryGetFightOverDuration(UIFightWindow? pane, out float duration) {
         duration = DefaultExitDuration;
         try {
             Transition? transition = pane?.com_Show?.fightOver;
-            if (transition == null || !transition.playing ||
-                TransitionReversed?.GetValue(transition) is not bool reversed || !reversed)
-                return false;
+            if (transition == null || !transition.playing) return false;
             if (TransitionDuration?.GetValue(transition) is float native && native > .05f) {
                 float scale = Math.Max(.01f, Math.Abs(transition.timeScale));
                 duration = Math.Max(.18f, Math.Min(2f, native / scale));
@@ -224,18 +236,16 @@ internal sealed class FightBuffListService : IDisposable {
         _window = fight;
         _attackerId = attackerId;
         _defenderId = defenderId;
-        _nextPhaseCheckAt = Time.realtimeSinceStartup + PhaseCheckInterval;
         _nonCombatSince = -1f;
     }
 
-    private void BeginExit(float now, bool nativeTransition, float duration) {
+    private void BeginExit(float now, float duration) {
         if (_overlay == null || _overlay.isDisposed) {
             Clear();
             return;
         }
         if (_exitStartedAt >= 0f) return;
         _exitStartedAt = now;
-        _closingWithNativeTransition = nativeTransition;
         _exitDuration = duration;
         _attacker.ExitX = _attacker.Panel?.x ?? 0f;
         _defender.ExitX = _defender.Panel?.x ?? 0f;
@@ -431,7 +441,7 @@ internal sealed class FightBuffListService : IDisposable {
         }
     }
 
-    internal void Clear() {
+    private void ClearVisuals() {
         _attacker.Clear();
         _defender.Clear();
         if (_overlay != null && !_overlay.isDisposed) {
@@ -445,10 +455,18 @@ internal sealed class FightBuffListService : IDisposable {
         _attackerId = _defenderId = 0;
         _exitStartedAt = -1f;
         _exitDuration = DefaultExitDuration;
-        _closingWithNativeTransition = false;
         _nonCombatSince = -1f;
         _nextPollAt = 0f;
-        _nextPhaseCheckAt = 0f;
+    }
+
+    internal void Clear() {
+        ClearVisuals();
+        _awaitNextRound = false;
+        _newRoundRequested = false;
+        if (_readySignal != null) {
+            _readySignal.RemoveListener(OnReadyFight);
+            _readySignal = null;
+        }
     }
 
     public void Dispose() => Clear();
