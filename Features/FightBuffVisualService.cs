@@ -30,6 +30,7 @@ internal sealed class FightBuffVisualService : IDisposable {
     private int _generation;
 
     internal bool Enabled { get; set; }
+    internal bool HasActiveEffects => _effects.Count > 0 || _director != null || _fightWindow != null;
 
     internal void Tick(FightWindow? fight) {
         if (!Enabled || fight == null || !GameLogicManager.hasInstance ||

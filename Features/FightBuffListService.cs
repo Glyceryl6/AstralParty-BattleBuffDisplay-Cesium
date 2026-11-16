@@ -44,6 +44,12 @@ internal sealed class FightBuffListService : IDisposable {
     private float _exitDuration = DefaultExitDuration;
     private bool _awaitNextRound;
     private bool _newRoundRequested;
+    private bool _resumeAfterExit;
+    private bool _introPending;
+    private bool _introSeen;
+    private bool _combatLive;
+    private float _readyAt;
+    internal bool CombatLive => _combatLive;
     private Signal<bool, UIPanelType>? _readySignal;
     private float _nonCombatSince = -1f;
     private float _nextPollAt;
@@ -58,8 +64,14 @@ internal sealed class FightBuffListService : IDisposable {
     // assigned, including a counterattack. Window visibility cannot identify
     // this boundary: the same FightWindow stays open between both rounds.
     private void OnReadyFight(bool isReady, UIPanelType panel) {
+        if (!isReady) return;
+        // ReadyFight changes step to 2 BEFORE the native intro movie plays.
+        // The current combat is not ready for Buff cards/effects at this point.
         _newRoundRequested = true;
-        _awaitNextRound = false;
+        _introPending = true;
+        _introSeen = false;
+        _readyAt = Time.realtimeSinceStartup;
+        _combatLive = false;
     }
 
     private void EnsureRoundSignal() {
@@ -84,9 +96,16 @@ internal sealed class FightBuffListService : IDisposable {
             EnsureRoundSignal();
             if (_newRoundRequested) {
                 _newRoundRequested = false;
-                // Always clear the previous two actors before the new round,
-                // even if a reverse animation had not finished yet.
-                ClearVisuals();
+                // A counterattack reuses the same FightWindow. Let the old
+                // actors retract before releasing their cards and effects.
+                if (_overlay != null) {
+                    _resumeAfterExit = true;
+                    BeginExit(now, DefaultExitDuration);
+                    _awaitNextRound = true;
+                } else {
+                    _resumeAfterExit = false;
+                    _awaitNextRound = false;
+                }
             }
 
             bool inCombat = IsCombatWindow(fight, out UIFightWindow? pane);
@@ -94,7 +113,15 @@ internal sealed class FightBuffListService : IDisposable {
                 (_window != null && _window.isShowing) || IsFightWindowShowing();
             UIFightWindow? nativePane = (fight ?? _window)?.contentPane as UIFightWindow;
             int phase = nativePane?.step?.selectedIndex ?? -1;
+            bool movieVisible = nativePane?.com_Show?.loader_Movie?.visible == true;
             bool fightOverPlaying = TryGetFightOverDuration(nativePane, out float nativeDuration);
+            if (movieVisible) _introSeen = true;
+            if (_introPending) {
+                // Some replay paths omit the movie: use a bounded fallback,
+                // but never draw while an actual intro is still on screen.
+                if (!movieVisible && (_introSeen || now - _readyAt >= 1.0f))
+                    _introPending = false;
+            }
 
             // FinishFight.Play() is the beginning of the old MOD's exit,
             // not Hide() and not only the later PlayReverse(). Result phase
@@ -117,13 +144,18 @@ internal sealed class FightBuffListService : IDisposable {
                     if (_exitStartedAt < 0f) BeginExit(now, DefaultExitDuration);
                     if (now - _exitStartedAt >= _exitDuration) ClearVisuals();
                     else Place(now);
+                    return;
                 }
-                // Do not draw the previous actors again simply because
-                // FightWindow still has step=2 between rounds.
-                return;
+                // A completed fight still has step=2 until its native
+                // window hides. Only readyFight may restart the display.
+                if (!_resumeAfterExit) return;
+                _resumeAfterExit = false;
+                _awaitNextRound = false;
             }
 
-            if (!inCombat || pane == null || fight == null || fightOverPlaying) {
+            if (!inCombat || pane == null || fight == null || fightOverPlaying ||
+                movieVisible || _introPending) {
+                _combatLive = false;
                 if (_overlay != null) Place(now);
                 return;
             }
@@ -134,6 +166,7 @@ internal sealed class FightBuffListService : IDisposable {
             }
 
             if (now < _nextPollAt) {
+                _combatLive = _overlay != null && _exitStartedAt < 0f;
                 Place(now);
                 return;
             }
@@ -179,6 +212,7 @@ internal sealed class FightBuffListService : IDisposable {
             RegisterNativeItems();
             Render(_attacker, attacker, now);
             Render(_defender, defender, now);
+            _combatLive = true;
             Place(now);
         } catch (Exception ex) {
             Clear();
@@ -246,6 +280,7 @@ internal sealed class FightBuffListService : IDisposable {
         }
         if (_exitStartedAt >= 0f) return;
         _exitStartedAt = now;
+        _combatLive = false;
         _exitDuration = duration;
         _attacker.ExitX = _attacker.Panel?.x ?? 0f;
         _defender.ExitX = _defender.Panel?.x ?? 0f;
@@ -454,6 +489,7 @@ internal sealed class FightBuffListService : IDisposable {
         _window = null;
         _attackerId = _defenderId = 0;
         _exitStartedAt = -1f;
+        _combatLive = false;
         _exitDuration = DefaultExitDuration;
         _nonCombatSince = -1f;
         _nextPollAt = 0f;
@@ -463,6 +499,10 @@ internal sealed class FightBuffListService : IDisposable {
         ClearVisuals();
         _awaitNextRound = false;
         _newRoundRequested = false;
+        _resumeAfterExit = false;
+        _introPending = false;
+        _introSeen = false;
+        _readyAt = 0f;
         if (_readySignal != null) {
             _readySignal.RemoveListener(OnReadyFight);
             _readySignal = null;

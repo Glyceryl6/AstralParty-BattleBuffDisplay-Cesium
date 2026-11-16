@@ -61,7 +61,12 @@ public sealed class BattleBuffDisplayMod : ModBase {
             FightWindow? fight = ActiveFightWindow.Find();
             _activeFight = fight != null;
             _lists?.Tick(fight);
-            if (_effects?.Enabled == true) _effects.Tick(fight);
+            // Optional Unity Buff effects must obey the SAME fight/move
+            // timeline as the list. Clear immediately during the intro,
+            // counterattack transition and retreat, not 550ms later.
+            if (_effects?.Enabled == true && _lists?.CombatLive == true)
+                _effects.Tick(fight);
+            else if (_effects?.HasActiveEffects == true) _effects.Clear();
         } catch (Exception error) {
             ClearScene();
             if (DateTime.UtcNow >= _nextWarning) {
