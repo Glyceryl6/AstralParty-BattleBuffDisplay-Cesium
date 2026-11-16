@@ -24,11 +24,17 @@ internal sealed class FightBuffListService : IDisposable {
     private const float PhaseCheckInterval = .08f;
     private const float ExitGrace = .12f;
     private const float EnterDuration = .30f;
-    private const float ExitDuration = .30f;
+    private const float DefaultExitDuration = .30f;
     private const float EdgeMargin = 12f;
 
     private static readonly MethodInfo? NativeListRenderer = typeof(BattlePlayerInfoWindow).GetMethod(
         "RefreshMonsterBuffList", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    // FightWindow.CloseFightWin plays fightOver in reverse, then awaits its
+    // completion before Hide(). Starting the slide-out at Hide is too late.
+    private static readonly FieldInfo? TransitionReversed = typeof(Transition).GetField(
+        "_reversed", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly FieldInfo? TransitionDuration = typeof(Transition).GetField(
+        "_totalDuration", BindingFlags.Instance | BindingFlags.NonPublic);
 
     private readonly Side _attacker = new Side();
     private readonly Side _defender = new Side();
@@ -37,6 +43,8 @@ internal sealed class FightBuffListService : IDisposable {
     private GRoot? _root;
     private GComponent? _overlay;
     private float _exitStartedAt = -1f;
+    private float _exitDuration = DefaultExitDuration;
+    private bool _closingWithNativeTransition;
     private float _nonCombatSince = -1f;
     private float _nextPollAt;
     private float _nextPhaseCheckAt;
@@ -60,33 +68,38 @@ internal sealed class FightBuffListService : IDisposable {
         try {
             bool inCombat = IsCombatWindow(fight, out UIFightWindow? pane);
 
-            // A fight consists of several visual steps (showtime, card, dice,
-            // result). Those are NOT separate battles. In particular, do not
-            // exit at step=1 or 6 and then enter again at the next step.
-            // The real lifecycle ends when the FightWindow leaves the popup
-            // stack. Looking only at its contentPane/onStage is too transient.
-            bool windowVisible = IsFightWindowShowing();
-            if (_overlay != null && now >= _nextPhaseCheckAt) {
+            // The popup is in the UI stack throughout challenge, combat and
+            // result. Do not treat a transient step change as a new battle.
+            bool windowVisible = (fight != null && fight.isShowing) ||
+                (_window != null && _window.isShowing) || IsFightWindowShowing();
+            bool nativeClosing = TryGetNativeCloseDuration(
+                (fight ?? _window)?.contentPane as UIFightWindow, out float nativeDuration);
+
+            // The native window retracts its Fight/Show transition *before*
+            // Hide(). Mirror its reverse start and duration to arrive offscreen
+            // as the original window disappears, as in the old MOD.
+            if (_overlay != null && nativeClosing && _exitStartedAt < 0f)
+                BeginExit(now, true, nativeDuration);
+
+            if (_overlay != null && now >= _nextPhaseCheckAt && _exitStartedAt < 0f) {
                 _nextPhaseCheckAt = now + PhaseCheckInterval;
-                if (windowVisible) {
-                    _nonCombatSince = -1f;
-                } else {
+                if (windowVisible) _nonCombatSince = -1f;
+                else {
                     if (_nonCombatSince < 0f) _nonCombatSince = now;
-                    if (_exitStartedAt < 0f && now - _nonCombatSince >= ExitGrace)
-                        BeginExit(now);
+                    if (now - _nonCombatSince >= ExitGrace)
+                        BeginExit(now, false, DefaultExitDuration);
                 }
             }
 
             if (_exitStartedAt >= 0f) {
-                if (windowVisible) {
-                    // A temporary UI reattachment should not restart both
-                    // slide-in animations. Keep the existing cards in place.
+                if (!_closingWithNativeTransition && windowVisible) {
+                    // A one-frame detach during entry is not a battle exit.
                     _exitStartedAt = -1f;
                     _nonCombatSince = -1f;
                     _attacker.AppearedAt = now - EnterDuration;
                     _defender.AppearedAt = now - EnterDuration;
                 } else {
-                    if (now - _exitStartedAt >= ExitDuration) Clear();
+                    if (!windowVisible && now - _exitStartedAt >= _exitDuration) Clear();
                     else Place(now);
                     return;
                 }
@@ -114,35 +127,39 @@ internal sealed class FightBuffListService : IDisposable {
 
             GameLogicManager logic = GameLogicManager.inst;
             BattleLogic? battle = logic.battle;
-            FightLogic? fightLogic = logic.fight;
-            BattleRole? attack = fightLogic?.attackData;
-            BattleRole? defend = fightLogic?.defendData;
+            // Old MOD reads FightWindow._AttackerData/_DefenderData, not the
+            // FightLogic state (which may still refer to another round during
+            // the first frames). Wait for the displayed window's own actors.
+            BattlePlayerData? windowAttacker = GetMember(fight, "_AttackerData") as BattlePlayerData;
+            BattlePlayerData? windowDefender = GetMember(fight, "_DefenderData") as BattlePlayerData;
+            long attackerId = windowAttacker?.player?.Id ?? 0;
+            long defenderId = windowDefender?.player?.Id ?? 0;
             // The combat controller can be present one or two frames before
             // the server's attacker/defender data. This is not an exit state.
-            if (battle == null || attack == null || defend == null ||
-                attack.PlayerId == defend.PlayerId) {
+            if (battle == null || attackerId <= 0 || defenderId <= 0 ||
+                attackerId == defenderId) {
                 Place(now);
                 return;
             }
 
-            BattlePlayerData? attacker = battle.GetPlayerDataById(attack.PlayerId);
-            BattlePlayerData? defender = battle.GetPlayerDataById(defend.PlayerId);
+            BattlePlayerData? attacker = windowAttacker;
+            BattlePlayerData? defender = windowDefender;
             if (attacker?.buffContainer == null || defender?.buffContainer == null) {
                 Place(now);
                 return;
             }
 
-            if (_overlay != null && (_attackerId != attack.PlayerId || _defenderId != defend.PlayerId)) {
+            if (_overlay != null && (_attackerId != attackerId || _defenderId != defenderId)) {
                 _attacker.Clear();
                 _defender.Clear();
             }
 
-            if (_overlay == null) CreateOverlay(pane, fight, attack.PlayerId, defend.PlayerId);
+            if (_overlay == null) CreateOverlay(pane, fight, attackerId, defenderId);
             else {
                 _pane = pane;
                 _window = fight;
-                _attackerId = attack.PlayerId;
-                _defenderId = defend.PlayerId;
+                _attackerId = attackerId;
+                _defenderId = defenderId;
             }
 
             RegisterNativeItems();
@@ -164,6 +181,21 @@ internal sealed class FightBuffListService : IDisposable {
             if (popup is FightWindow window && window.isShowing) return true;
         }
         return false;
+    }
+
+    private static bool TryGetNativeCloseDuration(UIFightWindow? pane, out float duration) {
+        duration = DefaultExitDuration;
+        try {
+            Transition? transition = pane?.com_Show?.fightOver;
+            if (transition == null || !transition.playing ||
+                TransitionReversed?.GetValue(transition) is not bool reversed || !reversed)
+                return false;
+            if (TransitionDuration?.GetValue(transition) is float native && native > .05f) {
+                float scale = Math.Max(.01f, Math.Abs(transition.timeScale));
+                duration = Math.Max(.18f, Math.Min(2f, native / scale));
+            }
+            return true;
+        } catch { return false; }
     }
 
     private static bool IsCombatWindow(FightWindow? fight, out UIFightWindow? pane) {
@@ -196,13 +228,15 @@ internal sealed class FightBuffListService : IDisposable {
         _nonCombatSince = -1f;
     }
 
-    private void BeginExit(float now) {
+    private void BeginExit(float now, bool nativeTransition, float duration) {
         if (_overlay == null || _overlay.isDisposed) {
             Clear();
             return;
         }
         if (_exitStartedAt >= 0f) return;
         _exitStartedAt = now;
+        _closingWithNativeTransition = nativeTransition;
+        _exitDuration = duration;
         _attacker.ExitX = _attacker.Panel?.x ?? 0f;
         _defender.ExitX = _defender.Panel?.x ?? 0f;
         Place(now);
@@ -230,7 +264,7 @@ internal sealed class FightBuffListService : IDisposable {
         float x;
         float alpha;
         if (_exitStartedAt >= 0f) {
-            float t = Smooth((now - _exitStartedAt) / ExitDuration);
+            float t = Smooth((now - _exitStartedAt) / _exitDuration);
             x = side.ExitX + (outsideX - side.ExitX) * t;
             alpha = 1f - t;
         } else {
@@ -410,6 +444,8 @@ internal sealed class FightBuffListService : IDisposable {
         _window = null;
         _attackerId = _defenderId = 0;
         _exitStartedAt = -1f;
+        _exitDuration = DefaultExitDuration;
+        _closingWithNativeTransition = false;
         _nonCombatSince = -1f;
         _nextPollAt = 0f;
         _nextPhaseCheckAt = 0f;
