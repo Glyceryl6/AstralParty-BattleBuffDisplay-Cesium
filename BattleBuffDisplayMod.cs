@@ -28,8 +28,8 @@ public sealed class BattleBuffDisplayMod : ModBase {
         // The Buff list is always enabled, even if an SDK build provides no
         // configuration service. Only the optional effects depend on config.
         if (Config != null) {
-            Config.SetDefault("battle.fightBuffEffects", false,
-                ConfigDoc.All("显示额外 Buff 特效（实验，可能影响性能）"));
+            Config.SetDefault("battle.fightBuffEffects", true,
+                ConfigDoc.All("显示额外 Buff 特效"));
             Config.SaveIfDirty();
         } else {
             Log.Warn("配置尚未就绪，使用默认关闭的附加特效");

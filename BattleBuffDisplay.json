@@ -1,9 +1,9 @@
 {
   "id": "BattleBuffDisplay",
   "name": "战斗界面 Buff 显示",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "author": "Glyceryl6",
-  "description": "在战斗双方显示原版 Buff 卡片、图标、说明、层数和剩余回合，支持居中排列及进退场动画。",
+  "description": "战斗界面中可以看到双方的Buff列表和Buff特效。",
   "permissions": 1,
   "sdkVersion": "3.8.3",
   "dependencies": []
